@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-
+import time
+import numpy as np
 from lib.pointops.functions import pointops
 
 
@@ -22,10 +23,20 @@ class PointTransformerLayer(nn.Module):
         self.softmax = nn.Softmax(dim=1)
         
     def forward(self, pxo) -> torch.Tensor:
+        base_address = "/home/ubuntu/Research/point-transformer/space_partitioning_files/"
+        file_name = str(time.time())
         p, x, o = pxo  # (n, 3), (n, c), (b)
         x_q, x_k, x_v = self.linear_q(x), self.linear_k(x), self.linear_v(x)  # (n, c)
         x_k = pointops.queryandgroup(self.nsample, p, p, x_k, None, o, o, use_xyz=True)  # (n, nsample, 3+c)
+        x_k_saving = x_k.cpu().detach().numpy()
+        o_saving = o.cpu().detach().numpy()
+        np.save(base_address+file_name+"_k.npy", x_k_saving)
+        np.save(base_address+file_name+"_o.npy", o_saving)
         x_v = pointops.queryandgroup(self.nsample, p, p, x_v, None, o, o, use_xyz=False)  # (n, nsample, c)
+        x_v_saving = x_v.cpu().detach().numpy()
+        np.save(base_address+file_name+"_v.npy", x_v_saving)
+
+        np.save(base_address+file_name+"_orig.npy", p.cpu().detach().numpy())
         p_r, x_k = x_k[:, :, 0:3], x_k[:, :, 3:]
         for i, layer in enumerate(self.linear_p): p_r = layer(p_r.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i == 1 else layer(p_r)    # (n, nsample, c)
         w = x_k - x_q.unsqueeze(1) + p_r.view(p_r.shape[0], p_r.shape[1], self.out_planes // self.mid_planes, self.mid_planes).sum(2)  # (n, nsample, c)

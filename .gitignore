@@ -10,10 +10,13 @@ checkpoints
 .ccls
 .ccls-cache/
 dist/
+exp/
+lib/pointops/pointops.egg-info/
 point_transformer.egg-info/
 *.zip
 *.so
 .tox/
+dataset/
 .mypy_cache
 **/*.pyc
 point_transformer/data/modelnet40_normal_resampled/
