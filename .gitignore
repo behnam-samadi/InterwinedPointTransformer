@@ -12,6 +12,7 @@ checkpoints
 dist/
 exp/
 lib/pointops/pointops.egg-info/
+space_partitioning_files/
 point_transformer.egg-info/
 *.zip
 *.so

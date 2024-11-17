@@ -28,15 +28,15 @@ class PointTransformerLayer(nn.Module):
         p, x, o = pxo  # (n, 3), (n, c), (b)
         x_q, x_k, x_v = self.linear_q(x), self.linear_k(x), self.linear_v(x)  # (n, c)
         x_k = pointops.queryandgroup(self.nsample, p, p, x_k, None, o, o, use_xyz=True)  # (n, nsample, 3+c)
-        x_k_saving = x_k.cpu().detach().numpy()
-        o_saving = o.cpu().detach().numpy()
-        np.save(base_address+file_name+"_k.npy", x_k_saving)
-        np.save(base_address+file_name+"_o.npy", o_saving)
+        #x_k_saving = x_k.cpu().detach().numpy()
+        # o_saving = o.cpu().detach().numpy()
+        # np.save(base_address+file_name+"_k.npy", x_k_saving)
+        # np.save(base_address+file_name+"_o.npy", o_saving)
         x_v = pointops.queryandgroup(self.nsample, p, p, x_v, None, o, o, use_xyz=False)  # (n, nsample, c)
-        x_v_saving = x_v.cpu().detach().numpy()
-        np.save(base_address+file_name+"_v.npy", x_v_saving)
+        # x_v_saving = x_v.cpu().detach().numpy()
+        # np.save(base_address+file_name+"_v.npy", x_v_saving)
 
-        np.save(base_address+file_name+"_orig.npy", p.cpu().detach().numpy())
+        #np.save(base_address+file_name+"_orig.npy", p.cpu().detach().numpy())
         p_r, x_k = x_k[:, :, 0:3], x_k[:, :, 3:]
         for i, layer in enumerate(self.linear_p): p_r = layer(p_r.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i == 1 else layer(p_r)    # (n, nsample, c)
         w = x_k - x_q.unsqueeze(1) + p_r.view(p_r.shape[0], p_r.shape[1], self.out_planes // self.mid_planes, self.mid_planes).sum(2)  # (n, nsample, c)
@@ -62,12 +62,64 @@ class TransitionDown(nn.Module):
     def forward(self, pxo):
         p, x, o = pxo  # (n, 3), (n, c), (b)
         if self.stride != 1:
-            n_o, count = [o[0].item() // self.stride], o[0].item() // self.stride
+            new_stride = self.stride / 2
+            n_o, count = [o[0].item() // new_stride], o[0].item() // new_stride
             for i in range(1, o.shape[0]):
-                count += (o[i].item() - o[i-1].item()) // self.stride
+                count += (o[i].item() - o[i-1].item()) // new_stride
                 n_o.append(count)
             n_o = torch.cuda.IntTensor(n_o)
             idx = pointops.furthestsampling(p, o, n_o)  # (m)
+            
+
+
+
+
+
+            # idx1 = np.array([]).astype(np.int32)
+            # idx2 = np.array([]).astype(np.int32)
+            #n_o_aug = np.concatenate((np.array([0]), n_o))
+            idx1 = torch.empty(0, dtype=idx.dtype, device=idx.device)
+            idx2 = torch.empty(0, dtype=idx.dtype, device=idx.device)
+            n_o_aug = torch.cat((torch.tensor([0], device=n_o.device, dtype = n_o.dtype), n_o))
+            n_o_1 = []
+            n_o_2 =[]
+            n1_count = 0
+            n2_count = 0
+            for i in range(n_o.shape[0]):
+                npoints = n_o_aug[i + 1] - n_o_aug[i]
+                if npoints % 2 == 0:
+                    npoint1 = int(npoints / 2)
+                    npoint2 = int(npoints / 2)
+                else:
+                    npoint1 = int(npoints // 2 + 1)
+                    npoint2 = int(npoints // 2)
+
+                n1_count += npoint1
+                n2_count += npoint2
+                added_part1 = idx[n_o_aug[i]:n_o_aug[i + 1]][0:npoint1]
+                added_part2 = idx[n_o_aug[i]:n_o_aug[i + 1]][npoint1:npoint1+npoint2]
+                # idx1 = np.concatenate((idx1, added_part1))
+                # idx2 = np.concatenate((idx2, added_part2))
+                idx1 = torch.cat((idx1, added_part1))
+                idx2 = torch.cat((idx2, added_part2))
+
+                n_o_1.append(n1_count)
+                n_o_2.append(n2_count)
+
+
+                # only for test:
+            n_o = torch.tensor(n_o_1, dtype = n_o.dtype, device = n_o.device)
+            idx = idx1
+                
+                
+
+
+            #base_address = "/home/ubuntu/Research/point-transformer/space_partitioning_files/"
+            #file_name = base_address+ str(time.time())
+            #np.save(file_name+"_original.npy", p.cpu().detach().numpy())
+            #np.save(file_name+"_idx.npy", idx.cpu().detach().numpy())
+            #np.save(file_name+"_o.npy", o.cpu().detach().numpy())
+            #np.save(file_name+"_n_o.npy", n_o.cpu().detach().numpy())
             n_p = p[idx.long(), :]  # (m, 3)
             x = pointops.queryandgroup(self.nsample, p, n_p, x, None, o, n_o, use_xyz=True)  # (m, 3+c, nsample)
             x = self.relu(self.bn(self.linear(x).transpose(1, 2).contiguous()))  # (m, c, nsample)
