@@ -23,27 +23,30 @@ class PointTransformerLayer(nn.Module):
         self.softmax = nn.Softmax(dim=1)
         
     def forward(self, pxo) -> torch.Tensor:
-        base_address = "/home/ubuntu/Research/point-transformer/space_partitioning_files/"
-        file_name = str(time.time())
-        p, x, o = pxo  # (n, 3), (n, c), (b)
-        x_q, x_k, x_v = self.linear_q(x), self.linear_k(x), self.linear_v(x)  # (n, c)
-        x_k = pointops.queryandgroup(self.nsample, p, p, x_k, None, o, o, use_xyz=True)  # (n, nsample, 3+c)
-        #x_k_saving = x_k.cpu().detach().numpy()
-        # o_saving = o.cpu().detach().numpy()
-        # np.save(base_address+file_name+"_k.npy", x_k_saving)
-        # np.save(base_address+file_name+"_o.npy", o_saving)
-        x_v = pointops.queryandgroup(self.nsample, p, p, x_v, None, o, o, use_xyz=False)  # (n, nsample, c)
-        # x_v_saving = x_v.cpu().detach().numpy()
-        # np.save(base_address+file_name+"_v.npy", x_v_saving)
-
-        #np.save(base_address+file_name+"_orig.npy", p.cpu().detach().numpy())
-        p_r, x_k = x_k[:, :, 0:3], x_k[:, :, 3:]
-        for i, layer in enumerate(self.linear_p): p_r = layer(p_r.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i == 1 else layer(p_r)    # (n, nsample, c)
-        w = x_k - x_q.unsqueeze(1) + p_r.view(p_r.shape[0], p_r.shape[1], self.out_planes // self.mid_planes, self.mid_planes).sum(2)  # (n, nsample, c)
-        for i, layer in enumerate(self.linear_w): w = layer(w.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i % 3 == 0 else layer(w)
-        w = self.softmax(w)  # (n, nsample, c)
-        n, nsample, c = x_v.shape; s = self.share_planes
-        x = ((x_v + p_r).view(n, nsample, s, c // s) * w.unsqueeze(2)).sum(1).view(n, c)
+        if len(pxo) == 6:
+            p, x, o, p2, x2, o2 = pxo  # (n, 3), (n, c), (b)
+            x_q, x_k, x_v = self.linear_q(x), self.linear_k(x2), self.linear_v(x2)  # (n, c)
+            x_k = pointops.queryandgroup(self.nsample, p2, p, x_k, None, o2, o, use_xyz=True)  # (n, nsample, 3+c)
+            x_v = pointops.queryandgroup(self.nsample, p2, p, x_v, None, o2, o, use_xyz=False)  # (n, nsample, c)
+            p_r, x_k = x_k[:, :, 0:3], x_k[:, :, 3:]
+            for i, layer in enumerate(self.linear_p): p_r = layer(p_r.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i == 1 else layer(p_r)    # (n, nsample, c)
+            w = x_k - x_q.unsqueeze(1) + p_r.view(p_r.shape[0], p_r.shape[1], self.out_planes // self.mid_planes, self.mid_planes).sum(2)  # (n, nsample, c)
+            for i, layer in enumerate(self.linear_w): w = layer(w.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i % 3 == 0 else layer(w)
+            w = self.softmax(w)  # (n, nsample, c)
+            n, nsample, c = x_v.shape; s = self.share_planes
+            x = ((x_v + p_r).view(n, nsample, s, c // s) * w.unsqueeze(2)).sum(1).view(n, c)
+        else:
+            p, x, o = pxo  # (n, 3), (n, c), (b)
+            x_q, x_k, x_v = self.linear_q(x), self.linear_k(x), self.linear_v(x)  # (n, c)
+            x_k = pointops.queryandgroup(self.nsample, p, p, x_k, None, o, o, use_xyz=True)  # (n, nsample, 3+c)
+            x_v = pointops.queryandgroup(self.nsample, p, p, x_v, None, o, o, use_xyz=False)  # (n, nsample, c)
+            p_r, x_k = x_k[:, :, 0:3], x_k[:, :, 3:]
+            for i, layer in enumerate(self.linear_p): p_r = layer(p_r.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i == 1 else layer(p_r)    # (n, nsample, c)
+            w = x_k - x_q.unsqueeze(1) + p_r.view(p_r.shape[0], p_r.shape[1], self.out_planes // self.mid_planes, self.mid_planes).sum(2)  # (n, nsample, c)
+            for i, layer in enumerate(self.linear_w): w = layer(w.transpose(1, 2).contiguous()).transpose(1, 2).contiguous() if i % 3 == 0 else layer(w)
+            w = self.softmax(w)  # (n, nsample, c)
+            n, nsample, c = x_v.shape; s = self.share_planes
+            x = ((x_v + p_r).view(n, nsample, s, c // s) * w.unsqueeze(2)).sum(1).view(n, c)
         return x
 
 
@@ -60,7 +63,10 @@ class TransitionDown(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         
     def forward(self, pxo):
-        p, x, o = pxo  # (n, 3), (n, c), (b)
+        p, x, o = pxo # (n, 3), (n, c), (b)
+        x_orig = torch.tensor(x)
+        o_orig = torch.tensor(o)
+        p_orig = torch.tensor(p)
         if self.stride != 1:
             new_stride = self.stride / 2
             n_o, count = [o[0].item() // new_stride], o[0].item() // new_stride
@@ -71,13 +77,6 @@ class TransitionDown(nn.Module):
             idx = pointops.furthestsampling(p, o, n_o)  # (m)
             
 
-
-
-
-
-            # idx1 = np.array([]).astype(np.int32)
-            # idx2 = np.array([]).astype(np.int32)
-            #n_o_aug = np.concatenate((np.array([0]), n_o))
             idx1 = torch.empty(0, dtype=idx.dtype, device=idx.device)
             idx2 = torch.empty(0, dtype=idx.dtype, device=idx.device)
             n_o_aug = torch.cat((torch.tensor([0], device=n_o.device, dtype = n_o.dtype), n_o))
@@ -93,13 +92,10 @@ class TransitionDown(nn.Module):
                 else:
                     npoint1 = int(npoints // 2 + 1)
                     npoint2 = int(npoints // 2)
-
                 n1_count += npoint1
                 n2_count += npoint2
                 added_part1 = idx[n_o_aug[i]:n_o_aug[i + 1]][0:npoint1]
                 added_part2 = idx[n_o_aug[i]:n_o_aug[i + 1]][npoint1:npoint1+npoint2]
-                # idx1 = np.concatenate((idx1, added_part1))
-                # idx2 = np.concatenate((idx2, added_part2))
                 idx1 = torch.cat((idx1, added_part1))
                 idx2 = torch.cat((idx2, added_part2))
 
@@ -107,27 +103,34 @@ class TransitionDown(nn.Module):
                 n_o_2.append(n2_count)
 
 
-                # only for test:
+            # only for test:
             n_o = torch.tensor(n_o_1, dtype = n_o.dtype, device = n_o.device)
-            idx = idx1
-                
-                
+            n_o2 = torch.tensor(n_o_2, dtype = n_o.dtype, device = n_o.device)
 
+            
+            
+                
+            n_p = p[idx1.long(), :]  # (m, 3)
+            n_p2 = p[idx2.long(), :]  # (m, 3)
+            
 
-            #base_address = "/home/ubuntu/Research/point-transformer/space_partitioning_files/"
-            #file_name = base_address+ str(time.time())
-            #np.save(file_name+"_original.npy", p.cpu().detach().numpy())
-            #np.save(file_name+"_idx.npy", idx.cpu().detach().numpy())
-            #np.save(file_name+"_o.npy", o.cpu().detach().numpy())
-            #np.save(file_name+"_n_o.npy", n_o.cpu().detach().numpy())
-            n_p = p[idx.long(), :]  # (m, 3)
+            
             x = pointops.queryandgroup(self.nsample, p, n_p, x, None, o, n_o, use_xyz=True)  # (m, 3+c, nsample)
             x = self.relu(self.bn(self.linear(x).transpose(1, 2).contiguous()))  # (m, c, nsample)
             x = self.pool(x).squeeze(-1)  # (m, c)
+
+            x2 = pointops.queryandgroup(self.nsample, p_orig, n_p2, x_orig, None, o_orig, n_o2, use_xyz=True)  # (m, 3+c, nsample)
+            x2 = self.relu(self.bn(self.linear(x2).transpose(1, 2).contiguous()))  # (m, c, nsample)
+            x2 = self.pool(x2).squeeze(-1)  # (m, c)
             p, o = n_p, n_o
+            p2, o2 = n_p2, n_o2
+
         else:
             x = self.relu(self.bn(self.linear(x)))  # (n, c)
-        return [p, x, o]
+            p2 = torch.tensor(p)
+            o2 = torch.tensor(o)
+            x2 = torch.tensor(x)
+        return [p, x, o, p2, x2, o2]
 
 
 class TransitionUp(nn.Module):
@@ -172,16 +175,28 @@ class PointTransformerBlock(nn.Module):
         self.linear3 = nn.Linear(planes, planes * self.expansion, bias=False)
         self.bn3 = nn.BatchNorm1d(planes * self.expansion)
         self.relu = nn.ReLU(inplace=True)
+        
 
     def forward(self, pxo):
-        p, x, o = pxo  # (n, 3), (n, c), (b)
-        identity = x
-        x = self.relu(self.bn1(self.linear1(x)))
-        x = self.relu(self.bn2(self.transformer2([p, x, o])))
-        x = self.bn3(self.linear3(x))
-        x += identity
-        x = self.relu(x)
-        return [p, x, o]
+        if len(pxo) == 6:
+            p, x, o, p2, x2, o2 = pxo  # (n, 3), (n, c), (b)
+            identity = x
+            x = self.relu(self.bn1(self.linear1(x)))
+            x = self.relu(self.bn2(self.transformer2([p, x, o, p2,x2,  o2])))
+            x = self.bn3(self.linear3(x))
+            x += identity
+            x = self.relu(x)
+            return [p2, x2, o2, p,x, o]
+        else:
+            p, x, o = pxo  # (n, 3), (n, c), (b)
+            identity = x
+            x = self.relu(self.bn1(self.linear1(x)))
+            x = self.relu(self.bn2(self.transformer2([p, x, o])))
+            x = self.bn3(self.linear3(x))
+            x += identity
+            x = self.relu(x)
+            return [p, x, o]
+
 
 
 class PointTransformerSeg(nn.Module):
@@ -222,11 +237,11 @@ class PointTransformerSeg(nn.Module):
     def forward(self, pxo):
         p0, x0, o0 = pxo  # (n, 3), (n, c), (b)
         x0 = p0 if self.c == 3 else torch.cat((p0, x0), 1)
-        p1, x1, o1 = self.enc1([p0, x0, o0])
-        p2, x2, o2 = self.enc2([p1, x1, o1])
-        p3, x3, o3 = self.enc3([p2, x2, o2])
-        p4, x4, o4 = self.enc4([p3, x3, o3])
-        p5, x5, o5 = self.enc5([p4, x4, o4])
+        p1, x1, o1, _, _, _ = self.enc1([p0, x0, o0])
+        p2, x2, o2, _, _, _ = self.enc2([p1, x1, o1])
+        p3, x3, o3, _, _, _ = self.enc3([p2, x2, o2])
+        p4, x4, o4, _, _, _ = self.enc4([p3, x3, o3])
+        p5, x5, o5, _, _, _ = self.enc5([p4, x4, o4])
         x5 = self.dec5[1:]([p5, self.dec5[0]([p5, x5, o5]), o5])[1]
         x4 = self.dec4[1:]([p4, self.dec4[0]([p4, x4, o4], [p5, x5, o5]), o4])[1]
         x3 = self.dec3[1:]([p3, self.dec3[0]([p3, x3, o3], [p4, x4, o4]), o3])[1]
